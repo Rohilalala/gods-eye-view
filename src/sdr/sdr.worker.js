@@ -14,6 +14,7 @@ let sampleRate = 2_048_000;
 let receiverLocation = null;
 let demodulator = null;
 let blockCount = 0;
+let tune = 0;
 const aircraft = new Map();
 // Positions refused by the decoder's speed check since the last clear.
 const decoderStats = { positionsRejected: 0 };
@@ -97,6 +98,7 @@ self.onmessage = (event) => {
   }
   if (message.type === 'reset') {
     blockCount = 0;
+    tune = message.tune;
     adsbStream.reset();
     if (message.clearAircraft) {
       aircraft.clear();
@@ -121,6 +123,7 @@ self.onmessage = (event) => {
         type: 'fm',
         samples,
         bins,
+        tune,
         snr:
           Number.isFinite(decoded.snr) && decoded.snr > 0
             ? 10 * Math.log10(decoded.snr)

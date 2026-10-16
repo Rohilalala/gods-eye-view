@@ -1,5 +1,14 @@
 # Changelog
 
+- Local FM seek now finds stations after it wraps past either band edge. Since
+  seek was added, each frame after a wrap from 108 MHz to 87.5 MHz (or back)
+  was filtered against the unwrapped starting frequency, so every station there
+  was skipped, and the frames either side of the wrap missed channels next to
+  the band edges. Seek now covers the whole band, both edge channels included,
+  reads only spectra of samples taken after each retune, passes over the
+  starting station to the next one and stops if a retune fails; with no other
+  station heard it still reports none and returns to where it started.
+
 - Add Barcelona's bike share to the GBFS registry: Bicing (543 stations, the
   city's PBSC system) and AMBici (237 e-bike stations across the metropolitan
   area, run by nextbike). Both are keyless GBFS 2.3 feeds listed in

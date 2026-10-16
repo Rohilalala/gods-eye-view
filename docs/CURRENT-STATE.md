@@ -5397,6 +5397,10 @@ internet-radio playback, and starting internet radio stops local FM. ADS-B
 reception does not interrupt internet radio.
 
 - **Modes.** FM (87.5–108 MHz, tune, seek, volume) or ADS-B at 1090 MHz.
+  Seek tunes up to 19 spectrum frames, 1.2 MHz apart except next to the band
+  edges, where clamped frame centres sit closer; it wraps at either edge and
+  stops on the nearest station in its direction. After one lap with no other
+  station it returns to the starting frequency; a failed retune stops it.
   With a receiver open, selecting ADS-B enables the Local ADS-B layer;
   selecting FM disables it.
   Enabling the layer switches the receiver to ADS-B; disabling it leaves the

@@ -22,6 +22,13 @@ export { createRememberingWebUsb } from './usbDevices.js';
 
 const FM_MIN_HZ = 87_500_000;
 const FM_MAX_HZ = 108_000_000;
+// Seek frames step around a lap one step longer than the band, so the frames
+// either side of the wrap, clamped into the band, each reach their edge.
+const FM_SEEK_STEP_HZ = 1_200_000;
+const FM_SEEK_LAP_HZ = FM_MAX_HZ - FM_MIN_HZ + FM_SEEK_STEP_HZ;
+const FM_SEEK_LAP_START_HZ = FM_MIN_HZ - FM_SEEK_STEP_HZ / 2;
+// 19 frames; the last is one channel short of a full lap.
+const FM_SEEK_FRAMES = Math.ceil(FM_SEEK_LAP_HZ / FM_SEEK_STEP_HZ);
 const READ_SAMPLE_COUNT = 32_768;
 const RATE_WINDOW_MS = 1_000;
 // A bulk read that has not completed in this long is treated as a stalled
@@ -313,6 +320,7 @@ export class SdrController {
     this._fmFrequencyHz = FM_DEFAULT_HZ;
     this._spectrum = null;
     this._spectrumSequence = 0;
+    this._fmTune = 0;
     this._spectrumWaiters = new Set();
     this._seekToken = 0;
     // Every provider opens its device through the selecting WebUSB wrapper.
@@ -392,6 +400,8 @@ export class SdrController {
       type: 'module',
     });
     this._worker = worker;
+    // A new worker tags its spectra from 0 until its first reset.
+    this._fmTune = 0;
     worker.onmessage = (event) => {
       if (this._worker !== worker) return;
       this._handleWorkerMessage(event.data || {});
@@ -489,7 +499,11 @@ export class SdrController {
           [message.samples.buffer],
         );
       }
-      if (message.bins instanceof Float32Array) {
+      // A spectrum of samples from before the latest retune is dropped.
+      if (
+        message.bins instanceof Float32Array &&
+        message.tune === this._fmTune
+      ) {
         this._spectrum = message.bins;
         this._spectrumSequence += 1;
         for (const waiter of this._spectrumWaiters)
@@ -1146,6 +1160,9 @@ export class SdrController {
       return true;
     }
     if (this.state.mode !== 'fm') await this.setMode('fm');
+    // Spectra are dropped from here until the worker takes this tag, so a
+    // retune that fails part-way never has them read at the wrong frequency.
+    const tune = ++this._fmTune;
     try {
       let actualFrequency = frequency;
       await this._queueUsb(async () => {
@@ -1153,7 +1170,7 @@ export class SdrController {
         if (Number.isFinite(tuned)) actualFrequency = tuned;
         await this._device.resetBuffer();
       });
-      this._worker?.postMessage({ type: 'reset' });
+      this._worker?.postMessage({ type: 'reset', tune });
       this._audioNode?.port.postMessage({ type: 'clear' });
       this._setState({
         frequencyHz: actualFrequency,
@@ -1200,12 +1217,23 @@ export class SdrController {
     });
     this._audioNode?.port.postMessage({ type: 'volume', value: 0 });
     try {
-      for (let scan = 0; scan < 18 && token === this._seekToken; scan += 1) {
-        const span = FM_MAX_HZ - FM_MIN_HZ;
-        const rawCenter = origin + seekDirection * scan * 1_200_000;
-        const center = FM_MIN_HZ + positiveModulo(rawCenter - FM_MIN_HZ, span);
+      for (
+        let scan = 0;
+        scan < FM_SEEK_FRAMES && token === this._seekToken;
+        scan += 1
+      ) {
+        const rawCenter = origin + seekDirection * scan * FM_SEEK_STEP_HZ;
+        const position =
+          FM_SEEK_LAP_START_HZ +
+          positiveModulo(rawCenter - FM_SEEK_LAP_START_HZ, FM_SEEK_LAP_HZ);
+        const center = clampFmFrequency(position);
+        // tuneFm reports the failure; no spectrum is valid for this frame.
+        if (!(await this.tuneFm(center, { quiet: true }))) {
+          if (token === this._seekToken)
+            this._setState({ seeking: false, seekMessage: 'Seek stopped' });
+          return null;
+        }
         const sequence = this._spectrumSequence;
-        await this.tuneFm(center, { quiet: true });
         this._setState({
           seekMessage: `Scanning ${(center / 1_000_000).toFixed(1)} MHz…`,
         });
@@ -1219,7 +1247,10 @@ export class SdrController {
           this.state.frequencyHz,
           this.state.sampleRate,
           seekDirection,
-          origin,
+          // Past the wrap the origin lies a lap behind this frame.
+          origin + position - rawCenter,
+          // A full lap ends back on the origin's own station.
+          { skipFrequency: origin },
         );
         if (!peak) continue;
         await this.tuneFm(peak.frequency, { quiet: true });
